@@ -10,7 +10,9 @@ uv sync
 
 Steps 03 and 04 need a `GEMINI_API_KEY` or `GOOGLE_API_KEY` in `.env`. The Gemini model is set by `GEMINI_MODEL` in `scripts/common.py`.
 
-`data/` is not in git. It holds the source PDFs (`data/raw/`), every generated file, and `data/catmapper.yaml` (see below).
+[bahai-data](https://github.com/jacobthill/bahai-data) must be checked out as a sibling folder (`../bahai-data`); step 4 reads its entity files.
+
+`data/` is not in git. It holds the source PDFs (`data/raw/`) and every generated file. `curated/` is in git and holds hand-edited files (see below).
 
 ## Pipeline
 
@@ -25,13 +27,20 @@ Run each step with `uv run python scripts/<script> ...`, from any directory. Ste
 
 Shared paths, file names, and the Gemini model (`GEMINI_MODEL`) are set in `scripts/common.py`.
 
-## Entity matching and `catmapper.yaml`
+## Entity matching
 
-Step 4 matches index headings against `data/catmapper.yaml`, a flat list of entity IDs and names. It is generated from the bahai-data authority files by `scripts/build_catmapper.py` in bahai-data. The copy here has diverged: it contains 29 entities added by hand during review that are not in bahai-data, and lacks a few added to bahai-data since.
+An entity exists only if it is in bahai-data. Step 4 matches index headings against the names and variant labels of the bahai-data authority files (people, places, events, groups, subjects, circular instructions), read directly from `../bahai-data/data` on every run, plus two curated files:
+
+- `curated/new_entities.jsonl`: new entities approved but not yet added to bahai-data, as draft records in bahai-data's format.
+- `curated/new_labels.csv`: extra names (`id,label,lang,note`) for entities that exist in bahai-data, such as the index's spelling of a name.
+
+Each row of `-text-with-ids.csv` gets an `id` and an `id_status`: `exists` (the entity is in bahai-data) or `pending` (only in `new_entities.jsonl`). Names shared by two entities are reported and not matched, so they go to review instead of being guessed. Works are not matched by title, since titles such as "Baghdad" cause false matches; names for works go in `new_labels.csv`. Matching code is in `scripts/entities.py`.
 
 ## Known issues
 
 - Manual review (step 5) is not read by any script, so reviewed decisions do not reach bahai-data or later runs.
+- `new_entities.jsonl` holds 24 entities added by hand during earlier review. They are drafts: descriptions, coordinates, and dates still need to be filled in before they can go to bahai-data.
+- bahai-data has two records for the ulama (`group_ulama` and `group_uluma`), so the heading "‘ulama" is not matched until one redirects to the other.
 - Step 4 matches on the full heading including the subentry (e.g. "Tumanskii, Aleksandr Grigor'evich: and Kitabi Aqdas"), which lowers the match rate.
 - Step 1 sometimes joins two subentries into one; 17 of these were corrected by hand in the v1 `-text-with-ids.csv`, which a re-run would lose.
 - The audit fails on both volumes: a few mentions match the page's running header instead of the body text.
@@ -40,7 +49,6 @@ Step 4 matches index headings against `data/catmapper.yaml`, a flat list of enti
 
 Agreed but not yet implemented:
 
-- Read entities from bahai-data directly instead of a `catmapper.yaml` copy, after moving the 29 hand-added entities into bahai-data.
 - Keep hand corrections to parsed headings in a corrections file tracked in git, applied after step 1. Never edit generated files.
 - Replace the triage file with a review sheet of proposed actions (link to an existing entity, create one, ignore), and an apply script that writes approved changes to bahai-data on a new branch.
 - Model subentries such as "Bab, the: execution of" as events, like existing bahai-data events.

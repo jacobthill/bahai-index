@@ -8,7 +8,14 @@ from types import SimpleNamespace
 # Paths are resolved from this file's location, so scripts work from any directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-CATMAPPER_YAML = DATA_DIR / "catmapper.yaml"
+
+# bahai-data is the only definition of which entities exist; read from a sibling checkout
+BAHAI_DATA_DIR = PROJECT_ROOT.parent / "bahai-data" / "data"
+
+# Hand-edited, tracked in git: entities and labels approved but not yet in bahai-data
+CURATED_DIR = PROJECT_ROOT / "curated"
+NEW_ENTITIES_JSONL = CURATED_DIR / "new_entities.jsonl"
+NEW_LABELS_CSV = CURATED_DIR / "new_labels.csv"
 
 VOLUMES = ("1", "2")
 BASE_NAME = "bahais-of-iran-transcaspia-caucasus-v{vol}"
