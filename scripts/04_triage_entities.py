@@ -1,57 +1,11 @@
 import pandas as pd
-import yaml
-import re
-import unicodedata
 import sys
 import json
 import time
-from common import parse_volume, get_gemini_client, generate_json, CATMAPPER_YAML
+from common import parse_volume, get_gemini_client, generate_json
+from entities import build_lookup, resolve
 
 client = None  # Set in __main__ via get_gemini_client()
-
-# --- PART 1: NORMALIZATION & MATCHING ---
-
-def flip_comma_name(name):
-    """Flips 'Last, First' to 'First Last'. If no comma, returns original."""
-    if pd.isna(name) or ',' not in str(name):
-        return str(name)
-    parts = [p.strip() for p in str(name).split(',')]
-    if len(parts) == 2:
-        return f"{parts[1]} {parts[0]}"
-    return str(name)
-
-def normalize_for_match(text):
-    """Aggressively flattens strings (removes accents, hyphens, and quotes)."""
-    if pd.isna(text):
-        return ""
-    text = str(text).lower()
-    text = re.sub(r"['‘’ʻʼ`\-]", "", text)
-    text = unicodedata.normalize('NFD', text)
-    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-def build_lookup(yaml_path):
-    """Builds a memory dictionary of all normalized YAML names and their ID."""
-    with open(yaml_path, 'r', encoding='utf-8') as f:
-        mappings = yaml.safe_load(f)
-
-    lookup = {}
-    def add_to_lookup(name_str, uid):
-        if not name_str: return
-        lookup[normalize_for_match(name_str)] = uid
-        if ',' in str(name_str):
-            lookup[normalize_for_match(flip_comma_name(name_str))] = uid
-
-    for entry in mappings:
-        uid = entry.get('id')
-        if not uid: continue
-        add_to_lookup(entry.get('preferred_name'), uid)
-        for alt in entry.get('alternates', []):
-            add_to_lookup(alt, uid)
-
-    return lookup
 
 # --- PART 2: LLM CATEGORIZATION ---
 
@@ -99,14 +53,9 @@ def get_categories_from_llm(subjects_list):
 # --- PART 3: MAIN EXECUTION ---
 
 def process_csv_with_ids(paths):
-    yaml_path = CATMAPPER_YAML
     csv_input = paths.final_csv
-
-    missing = [p for p in (yaml_path, csv_input) if not p.exists()]
-    if missing:
-        print("[!] Error: Could not find required files:")
-        for p in missing:
-            print(f"      {p}")
+    if not csv_input.exists():
+        print(f"[!] Error: Could not find {csv_input}. Did you run step 03 first?")
         sys.exit(1)
 
     # Refuse to overwrite existing outputs (the triage file may contain manual review work)
@@ -120,31 +69,21 @@ def process_csv_with_ids(paths):
         print("    Move or rename them (especially if they contain manual review work), then re-run.")
         sys.exit(1)
 
-    print("Building normalized lookup table from YAML...")
-    lookup = build_lookup(yaml_path)
+    print("Building lookup from bahai-data and curated files...")
+    lookup = build_lookup()
 
     print(f"Reading CSV: {csv_input.name}...")
     df = pd.read_csv(csv_input)
 
-    def resolve_id(subject):
-        if pd.isna(subject): return None
-        search_val = normalize_for_match(subject)
-        if search_val in lookup:
-            return lookup[search_val]
-        if ',' in str(subject):
-            flipped_val = normalize_for_match(flip_comma_name(subject))
-            if flipped_val in lookup:
-                return lookup[flipped_val]
-        return None
+    print("Resolving IDs...")
+    resolved = df['full_subject'].apply(lambda s: resolve(s, lookup) if pd.notna(s) else (None, None))
+    df['id'] = resolved.str[0]
+    # 'exists': in bahai-data; 'pending': only in curated/new_entities.jsonl, not yet applied
+    df['id_status'] = resolved.str[1]
 
-    print("Resolving IDs against YAML...")
-    df['id'] = df['full_subject'].apply(resolve_id)
-
-    # Reorder columns to put 'id' first
-    cols = df.columns.tolist()
-    if 'id' in cols:
-        cols.insert(0, cols.pop(cols.index('id')))
-        df = df[cols]
+    # Reorder columns to put 'id' and 'id_status' first
+    cols = [c for c in df.columns if c not in ('id', 'id_status')]
+    df = df[['id', 'id_status'] + cols]
 
     # Save the main enriched CSV
     df.to_csv(csv_output, index=False)
@@ -185,12 +124,15 @@ def process_csv_with_ids(paths):
     failures = {c: int(failure_counts.get(c, 0)) for c in ('llm_unavailable', 'llm_error', 'llm_missing')}
 
     # Report statistics
-    matched_count = df['id'].notnull().sum()
     total_count = len(df)
+    exists_count = (df['id_status'] == 'exists').sum()
+    pending_count = (df['id_status'] == 'pending').sum()
 
     print(f"\n--- Matching Complete ---")
     print(f"Total Rows:       {total_count}")
-    print(f"Matched Rows:     {matched_count} ({matched_count/total_count:.1%})")
+    print(f"Matched Rows:     {exists_count + pending_count} ({(exists_count + pending_count)/total_count:.1%})")
+    print(f"  in bahai-data:  {exists_count}")
+    print(f"  pending:        {pending_count} (entity in curated/new_entities.jsonl, not yet in bahai-data)")
     print(f"Main Output:      {csv_output}")
     print(f"Triage Output:    {triage_output} ({len(unique_unmatched)} unique unmatched entities to review)")
     if any(failures.values()):
@@ -200,6 +142,6 @@ def process_csv_with_ids(paths):
         print("    These rows have no draft_id. Fix the cause, move the output files, and re-run.")
 
 if __name__ == "__main__":
-    paths = parse_volume("Match entities to catmapper IDs and triage the rest with Gemini.")
+    paths = parse_volume("Match headings to bahai-data entities and triage the rest with Gemini.")
     client = get_gemini_client()
     process_csv_with_ids(paths)
