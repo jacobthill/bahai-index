@@ -21,6 +21,10 @@ CORRECTIONS_CSV = CURATED_DIR / "corrections.csv"
 VOLUMES = ("1", "2")
 BASE_NAME = "bahais-of-iran-transcaspia-caucasus-v{vol}"
 
+# Vertical band (PDF points from the top) holding each volume's running header and page number.
+# Checked against every page: nothing else is printed there.
+HEADER_BANDS = {"1": (30, 50), "2": (60, 80)}
+
 # Pinned for reproducibility; changing it may change LLM-derived results
 GEMINI_MODEL = "gemini-3.8-flash"
 
@@ -29,6 +33,7 @@ def volume_paths(vol):
     name = BASE_NAME.format(vol=vol)
     return SimpleNamespace(
         vol=vol,
+        header_band=HEADER_BANDS[vol],
         pdf=DATA_DIR / "raw" / f"{name}.pdf",
         extracted_csv=DATA_DIR / "extracted_csv" / f"{name}.csv",           # step 01
         context_csv=DATA_DIR / "csv_plus_text" / f"{name}-text-context.csv",  # step 02
