@@ -206,6 +206,8 @@ def audit_pagination(paths):
             if f['struct']:
                 print(f"   -> Preview of text generated:\n   {f['debug']['text_snippet']}")
 
+    return passed
+
 if __name__ == "__main__":
     paths = parse_volume("Audit step 03 output for pagination and selector problems.")
     sys.exit(0 if audit_pagination(paths) else 1)

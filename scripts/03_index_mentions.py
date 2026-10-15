@@ -1,13 +1,50 @@
+import hashlib
+import json
 import pandas as pd
 import re
 import time
-from common import parse_volume, get_gemini_client, generate_json
+from common import parse_volume, get_gemini_client, generate_json, DATA_DIR, GEMINI_MODEL
 
 # --- CONFIGURATION ---
 PREFIX_SUFFIX_LENGTH = 50
 LIMIT = None  # Set to an integer to test a small batch (e.g., 20)
 
 client = None  # Set in __main__ via get_gemini_client()
+
+# Cache of successful Gemini answers, keyed by model + prompt, so re-runs only call Gemini
+# for rows whose entry or page text changed. Delete the file to start fresh.
+LLM_CACHE_JSONL = DATA_DIR / "cache" / "step03_llm.jsonl"
+llm_cache = None
+cache_stats = {'hits': 0, 'calls': 0}
+
+def load_llm_cache():
+    cache = {}
+    if LLM_CACHE_JSONL.exists():
+        with open(LLM_CACHE_JSONL, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    entry = json.loads(line)
+                    cache[entry['key']] = entry['exact_substrings']
+    return cache
+
+def cached_llm_call(prompt):
+    """Returns Gemini's exact_substrings for a prompt, from the cache when possible.
+    Only successful answers are cached, so failures are retried on the next run."""
+    global llm_cache
+    if llm_cache is None:
+        llm_cache = load_llm_cache()
+    key = hashlib.sha256(f"{GEMINI_MODEL}\n{prompt}".encode('utf-8')).hexdigest()
+    if key in llm_cache:
+        cache_stats['hits'] += 1
+        return llm_cache[key]
+    cache_stats['calls'] += 1
+    result = generate_json(client, prompt).get("exact_substrings", [])
+    time.sleep(0.5)  # Rate limit protection; cached answers skip it
+    llm_cache[key] = result
+    LLM_CACHE_JSONL.parent.mkdir(parents=True, exist_ok=True)
+    with open(LLM_CACHE_JSONL, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'key': key, 'exact_substrings': result}, ensure_ascii=False) + "\n")
+    return result
 
 # --- PART 1: HEALING & WINDOWING ---
 
@@ -35,7 +72,7 @@ def get_llm_mentions(full_subject, main_subject, text):
     Format: {{"exact_substrings": ["exact string from text here"]}}
     """
     try:
-        return generate_json(client, prompt).get("exact_substrings", [])
+        return cached_llm_call(prompt)
     except Exception as e:
         raise LLMError(f"{type(e).__name__}: {e}") from e
 
@@ -198,7 +235,6 @@ def process(paths):
                 continue
             if search_terms:
                 stats['llm'] += 1
-            time.sleep(0.5)
 
         # 5. FAILURE TO LOCATE
         if not search_terms:
@@ -249,6 +285,7 @@ def process(paths):
     print(f"LLM Errors:         {stats['llm_error']}")
     if stats['llm_error']:
         print(f"⚠️  {stats['llm_error']} rows were not checked by the LLM and are marked '[LLM ERROR: ...]'. Fix the cause and re-run.")
+    print(f"Gemini calls:       {cache_stats['calls']} ({cache_stats['hits']} answered from cache)")
     print(f"Data saved to {paths.final_csv}")
 
 if __name__ == "__main__":

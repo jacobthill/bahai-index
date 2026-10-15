@@ -164,18 +164,32 @@ def clean_page_content(text):
     text = re.sub(r'\n\s*\n+', '\n\n', text)
     return text.strip()
 
-def get_clean_page_text(doc, page_index):
+def strip_running_header(block_text):
+    """Keeps only the page number from a running-header block, dropping header titles like
+    'LETTERS OF ALEKSANDR TUMANSKII' so they can't be matched as mentions. The page number
+    stays because audit_pagination.py uses it to check pagination."""
+    block_text = re.sub(r'\d{4}\s*[–—-]\s*\d{4}', ' ', block_text)  # period headers like '1902–1928'
+    numbers = re.findall(r'(?<![\w-])(\d{1,3}|[ivxlc]+)(?![\w-])', block_text)
+    return "\n".join(numbers)
+
+def get_clean_page_text(doc, page_index, header_band):
     if page_index < 0 or page_index >= len(doc): return ""
     page = doc.load_page(page_index)
     blocks = page.get_text("blocks")
     blocks.sort(key=lambda b: (b[1], b[0]))
-    valid_blocks = [b[4] for b in blocks if not is_likely_caption(b[4])]
+    top, bottom = header_band
+    valid_blocks = []
+    for b in blocks:
+        if is_likely_caption(b[4]):
+            continue
+        in_header_band = top <= b[1] and b[3] <= bottom
+        valid_blocks.append(strip_running_header(b[4]) if in_header_band else b[4])
     return clean_page_content("\n".join(valid_blocks))
 
-def get_substantial_page_text(doc, start_idx, direction, min_chars=400):
+def get_substantial_page_text(doc, start_idx, direction, header_band, min_chars=400):
     current_idx = start_idx
     while 0 <= current_idx < len(doc):
-        text = get_clean_page_text(doc, current_idx)
+        text = get_clean_page_text(doc, current_idx, header_band)
         if len(text) >= min_chars and "\n\n" in text:
             return text
         current_idx += direction
@@ -215,13 +229,13 @@ def process_corpus(paths):
             post_list.append("")
             continue
 
-        tgt = get_clean_page_text(doc, target_idx)
+        tgt = get_clean_page_text(doc, target_idx, paths.header_band)
 
         if not tgt.strip():
             tgt = f"[IMAGE OR BLANK PAGE: No readable text found on logical page {base_page}]"
 
-        pre = get_substantial_page_text(doc, target_idx - 1, direction=-1)
-        post = get_substantial_page_text(doc, target_idx + 1, direction=1)
+        pre = get_substantial_page_text(doc, target_idx - 1, -1, paths.header_band)
+        post = get_substantial_page_text(doc, target_idx + 1, 1, paths.header_band)
 
         pre_list.append(pre)
         tgt_list.append(tgt)

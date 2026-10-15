@@ -21,7 +21,9 @@ Run each step with `uv run python scripts/<script> ...`, from any directory. Ste
 1. Run 01_parse_bahais-iran-transcaspia-caucasus-v1.py and 01_parse_bahais-iran-transcaspia-caucasus-v2.py to extract entries and page numbers from the index. --> extracted_csv
 2. Run `02_text.py 1` and `02_text.py 2` to get the text for each entry. --> csv_plus_text
    - Headings listed in `curated/corrections.csv` are corrected first. Use it for parsing errors that can't be fixed in step 1's code; never edit generated files.
+   - Running-header titles (e.g. "LETTERS OF ALEKSANDR TUMANSKII") are dropped from the page text, so they can't be matched as mentions. Page numbers are kept for the audit. Each volume's header position is `HEADER_BANDS` in `scripts/common.py`.
 3. Run `03_index_mentions.py 1` and `03_index_mentions.py 2` to find the mention of the indexed entity in the text. --> csv_final
+   - Gemini's answers are cached in `data/cache/step03_llm.jsonl`, so a re-run only calls Gemini for entries whose heading or page text changed. Delete the file to start fresh.
    - Check the output with `audit_pagination.py 1` / `audit_pagination.py 2`. It prints a diagnostic report and exits with code 1 if it finds warnings, so it can gate step 4: `uv run python scripts/audit_pagination.py 1 && uv run python scripts/04_triage_entities.py 1`.
 4. Run `04_triage_entities.py 1` and `04_triage_entities.py 2` to assign a preliminary category to each entity and try to match its id. --> bahais-of-iran-transcaspia-caucasus-v?-text-with-ids.csv, triage_review_v?.csv. Refuses to run if those files already exist; move them first.
 5. Manually review all ids and categories in triage_review_v?.csv. Save the reviewed copy under a different name so a re-run of step 4 can't be confused with it.
@@ -42,8 +44,8 @@ Each row of `-text-with-ids.csv` gets an `id` and an `id_status`: `exists` (the 
 - Manual review (step 5) is not read by any script, so reviewed decisions do not reach bahai-data or later runs.
 - `new_entities.jsonl` holds 24 entities added by hand during earlier review. They are drafts: descriptions, coordinates, and dates still need to be filled in before they can go to bahai-data.
 - Step 4 matches on the full heading including the subentry (e.g. "Tumanskii, Aleksandr Grigor'evich: and Kitabi Aqdas"), which lowers the match rate.
-- Steps 3 and 4 have not been re-run since step 1 stopped joining sibling subentries ("death of" + "and immigration to Ashgabat"), so `csv_final/` still has the 11 joined headings in v1. They will be re-run after the running-header fix.
-- The audit fails on both volumes: a few mentions match the page's running header instead of the body text.
+- Step 4 has not been re-run since steps 1–3 changed, so the `-text-with-ids.csv` and triage files are out of date.
+- The audit passes for v1 but not v2, because of 2 rows whose `presentation_text` excerpt is wrong: the mention also appears on the preceding page and the excerpt was taken from there (row 77), and a mention spans more paragraphs than the excerpt includes (row 285). The selectors themselves are correct.
 
 ## Direction
 
