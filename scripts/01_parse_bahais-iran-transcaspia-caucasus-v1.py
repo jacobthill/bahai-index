@@ -217,8 +217,14 @@ def parse_hierarchical_index(pdf_path, index_pages, initial_main_subject=""):
                     in_parens = "(" in target and ")" not in target
                     ends_with_comma = target.endswith(",")
 
+                    # Action 0: A line after page numbers starts a new subentry. The previous one
+                    # is complete, even if it ends in a word like "of" that usually signals a wrap
+                    # (e.g. "death of 111, 114" followed by "and immigration to Ashgabat 19").
+                    if last_line_had_numbers and not is_at_baseline:
+                        sub_subject = extracted_text
+
                     # Action 1: Force Merge (Strip Hyphen, No Space)
-                    if (is_hyphenated and starts_lower and not is_article) or (in_parens and starts_lower):
+                    elif (is_hyphenated and starts_lower and not is_article) or (in_parens and starts_lower):
                         new_val = HYPHEN_SIGNAL.sub('', target) + extracted_text
                         if sub_subject: sub_subject = new_val
                         else: main_subject = new_val
