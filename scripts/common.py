@@ -25,6 +25,9 @@ BASE_NAME = "bahais-of-iran-transcaspia-caucasus-v{vol}"
 # Checked against every page: nothing else is printed there.
 HEADER_BANDS = {"1": (30, 50), "2": (60, 80)}
 
+# Pages of each PDF (1-based) that hold the index
+INDEX_PAGES = {"1": range(290, 310), "2": range(229, 337)}
+
 # Pinned for reproducibility; changing it may change LLM-derived results
 GEMINI_MODEL = "gemini-3.8-flash"
 
@@ -34,8 +37,10 @@ def volume_paths(vol):
     return SimpleNamespace(
         vol=vol,
         header_band=HEADER_BANDS[vol],
+        index_pages=list(INDEX_PAGES[vol]),
         pdf=DATA_DIR / "raw" / f"{name}.pdf",
         extracted_csv=DATA_DIR / "extracted_csv" / f"{name}.csv",           # step 01
+        cross_refs_csv=DATA_DIR / "extracted_csv" / f"{name}-cross-references.csv",  # cross_references.py
         context_csv=DATA_DIR / "csv_plus_text" / f"{name}-text-context.csv",  # step 02
         final_csv=DATA_DIR / "csv_final" / f"{name}-text-final.csv",          # step 03
         with_ids_csv=DATA_DIR / "csv_final" / f"{name}-text-with-ids.csv",    # step 04

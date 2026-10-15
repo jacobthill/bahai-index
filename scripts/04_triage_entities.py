@@ -75,26 +75,42 @@ def process_csv_with_ids(paths):
     print(f"Reading CSV: {csv_input.name}...")
     df = pd.read_csv(csv_input)
 
-    print("Resolving IDs...")
-    resolved = df['full_subject'].apply(lambda s: resolve(s, lookup) if pd.notna(s) else (None, None))
-    df['id'] = resolved.str[0]
-    # 'exists': in bahai-data; 'pending': only in curated/new_entities.jsonl, not yet applied
-    df['id_status'] = resolved.str[1]
+    def resolve_row(row):
+        """Tries the full entry first (heading + subentry, which can name a specific event),
+        then the heading alone. The subentry then describes the mention rather than naming it."""
+        if pd.notna(row['sub_subject']) and str(row['sub_subject']).strip():
+            uid, status = resolve(row['full_subject'], lookup)
+            if uid: return uid, status, 'full_subject'
+        if pd.notna(row['main_subject']):
+            uid, status = resolve(row['main_subject'], lookup)
+            if uid: return uid, status, 'heading'
+        return None, None, None
 
-    # Reorder columns to put 'id' and 'id_status' first
-    cols = [c for c in df.columns if c not in ('id', 'id_status')]
-    df = df[['id', 'id_status'] + cols]
+    print("Resolving IDs...")
+    resolved = df.apply(resolve_row, axis=1, result_type='expand')
+    df['id'] = resolved[0]
+    # 'exists': in bahai-data; 'pending': only in curated/new_entities.jsonl, not yet applied
+    df['id_status'] = resolved[1]
+    # 'full_subject' or 'heading': which part of the entry matched
+    df['id_matched_on'] = resolved[2]
+
+    # Reorder columns to put the ID columns first
+    id_cols = ['id', 'id_status', 'id_matched_on']
+    df = df[id_cols + [c for c in df.columns if c not in id_cols]]
 
     # Save the main enriched CSV
     df.to_csv(csv_output, index=False)
 
     # --- TRIAGE GENERATION WITH GEMINI ---
     print("\nPreparing Triage Review Data...")
-    unmatched_df = df[df['id'].isnull()]
-    triage_counts = unmatched_df['full_subject'].value_counts().reset_index()
-    triage_counts.columns = ['full_subject', 'frequency']
+    # One row per unmatched heading: a heading is one decision, whatever its subentries
+    unmatched_df = df[df['id'].isnull() & (df['type'] != 'cross_reference')]
+    triage_counts = unmatched_df.groupby('main_subject').agg(
+        frequency=('main_subject', 'size'),
+        subentries=('sub_subject', lambda s: "; ".join(dict.fromkeys(x for x in s.dropna() if str(x).strip()))),
+    ).reset_index().rename(columns={'main_subject': 'heading'}).sort_values('frequency', ascending=False)
 
-    unique_unmatched = triage_counts['full_subject'].tolist()
+    unique_unmatched = triage_counts['heading'].tolist()
     print(f"Found {len(unique_unmatched)} unique unmatched entities. Asking Gemini for predictions...")
 
     # Batch LLM calls to prevent context overflow or massive JSON payloads
@@ -111,10 +127,10 @@ def process_csv_with_ids(paths):
 
     # Map LLM results back to the triage dataframe
     # Subjects Gemini silently omitted from its response are marked 'llm_missing'
-    triage_counts['predicted_category'] = triage_counts['full_subject'].apply(
+    triage_counts['predicted_category'] = triage_counts['heading'].apply(
         lambda x: llm_predictions.get(x, {}).get('category', 'llm_missing')
     )
-    triage_counts['draft_id'] = triage_counts['full_subject'].apply(
+    triage_counts['draft_id'] = triage_counts['heading'].apply(
         lambda x: llm_predictions.get(x, {}).get('draft_id', '')
     )
 
@@ -134,7 +150,8 @@ def process_csv_with_ids(paths):
     print(f"  in bahai-data:  {exists_count}")
     print(f"  pending:        {pending_count} (entity in curated/new_entities.jsonl, not yet in bahai-data)")
     print(f"Main Output:      {csv_output}")
-    print(f"Triage Output:    {triage_output} ({len(unique_unmatched)} unique unmatched entities to review)")
+    print(f"  matched on full entry: {(df['id_matched_on'] == 'full_subject').sum()}, on heading: {(df['id_matched_on'] == 'heading').sum()}")
+    print(f"Triage Output:    {triage_output} ({len(unique_unmatched)} unmatched headings to review)")
     if any(failures.values()):
         print(f"\n⚠️  {sum(failures.values())} entities were NOT classified by the LLM:")
         for cat, n in failures.items():

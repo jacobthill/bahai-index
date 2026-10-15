@@ -301,7 +301,7 @@ if __name__ == "__main__":
     FILE_PATH = paths.pdf
     OUT_PATH = paths.extracted_csv
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PAGES = list(range(290, 310))
+    PAGES = paths.index_pages
 
     extracted = parse_hierarchical_index(FILE_PATH, PAGES)
     df = pd.DataFrame(extracted)
