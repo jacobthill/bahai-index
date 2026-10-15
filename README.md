@@ -20,6 +20,7 @@ Run each step with `uv run python scripts/<script> ...`, from any directory. Ste
 
 1. Run 01_parse_bahais-iran-transcaspia-caucasus-v1.py and 01_parse_bahais-iran-transcaspia-caucasus-v2.py to extract entries and page numbers from the index. --> extracted_csv
 2. Run `02_text.py 1` and `02_text.py 2` to get the text for each entry. --> csv_plus_text
+   - Headings listed in `curated/corrections.csv` are corrected first. Use it for parsing errors that can't be fixed in step 1's code; never edit generated files.
 3. Run `03_index_mentions.py 1` and `03_index_mentions.py 2` to find the mention of the indexed entity in the text. --> csv_final
    - Check the output with `audit_pagination.py 1` / `audit_pagination.py 2`. It prints a diagnostic report and exits with code 1 if it finds warnings, so it can gate step 4: `uv run python scripts/audit_pagination.py 1 && uv run python scripts/04_triage_entities.py 1`.
 4. Run `04_triage_entities.py 1` and `04_triage_entities.py 2` to assign a preliminary category to each entity and try to match its id. --> bahais-of-iran-transcaspia-caucasus-v?-text-with-ids.csv, triage_review_v?.csv. Refuses to run if those files already exist; move them first.
@@ -40,16 +41,14 @@ Each row of `-text-with-ids.csv` gets an `id` and an `id_status`: `exists` (the 
 
 - Manual review (step 5) is not read by any script, so reviewed decisions do not reach bahai-data or later runs.
 - `new_entities.jsonl` holds 24 entities added by hand during earlier review. They are drafts: descriptions, coordinates, and dates still need to be filled in before they can go to bahai-data.
-- bahai-data has two records for the ulama (`group_ulama` and `group_uluma`), so the heading "‘ulama" is not matched until one redirects to the other.
 - Step 4 matches on the full heading including the subentry (e.g. "Tumanskii, Aleksandr Grigor'evich: and Kitabi Aqdas"), which lowers the match rate.
-- Step 1 sometimes joins two subentries into one; 17 of these were corrected by hand in the v1 `-text-with-ids.csv`, which a re-run would lose.
+- Steps 3 and 4 have not been re-run since step 1 stopped joining sibling subentries ("death of" + "and immigration to Ashgabat"), so `csv_final/` still has the 11 joined headings in v1. They will be re-run after the running-header fix.
 - The audit fails on both volumes: a few mentions match the page's running header instead of the body text.
 
 ## Direction
 
 Agreed but not yet implemented:
 
-- Keep hand corrections to parsed headings in a corrections file tracked in git, applied after step 1. Never edit generated files.
 - Replace the triage file with a review sheet of proposed actions (link to an existing entity, create one, ignore), and an apply script that writes approved changes to bahai-data on a new branch.
 - Model subentries such as "Bab, the: execution of" as events, like existing bahai-data events.
 - Export one manifestation per volume (text in `bahai-data/data/copyright/`) and annotations with a `page` field, which bahai-rag uses to cite by book and page.

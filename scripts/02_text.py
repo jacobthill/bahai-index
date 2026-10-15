@@ -1,7 +1,7 @@
 import fitz
 import pandas as pd
 import re
-from common import parse_volume
+from common import parse_volume, apply_corrections
 
 def is_roman_numeral(s):
     s = str(s).strip(" \t\n\r,.;()[]").lower()
@@ -184,7 +184,7 @@ def get_substantial_page_text(doc, start_idx, direction, min_chars=400):
 def process_corpus(paths):
     paths.context_csv.parent.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(paths.pdf)
-    df = pd.read_csv(paths.extracted_csv)
+    df = apply_corrections(pd.read_csv(paths.extracted_csv), paths.vol)
 
     arabic_map, roman_map = build_page_map(doc)
     max_pages = len(doc)
