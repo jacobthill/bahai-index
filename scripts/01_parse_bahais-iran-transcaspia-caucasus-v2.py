@@ -220,7 +220,7 @@ if __name__ == "__main__":
     FILE_PATH = paths.pdf
     OUT_PATH = paths.extracted_csv
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PAGES = list(range(229, 337))
+    PAGES = paths.index_pages
     extracted = parse_hierarchical_index(FILE_PATH, PAGES)
     pd.DataFrame(extracted).to_csv(OUT_PATH, index=False)
     print(f"Extraction complete. Total rows: {len(extracted)}")
