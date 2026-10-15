@@ -45,7 +45,6 @@ Each row of `-text-with-ids.csv` gets an `id` and an `id_status`: `exists` (the 
 - `new_entities.jsonl` holds 24 entities added by hand during earlier review. They are drafts: descriptions, coordinates, and dates still need to be filled in before they can go to bahai-data.
 - Step 4 matches on the full heading including the subentry (e.g. "Tumanskii, Aleksandr Grigor'evich: and Kitabi Aqdas"), which lowers the match rate.
 - Step 4 has not been re-run since steps 1–3 changed, so the `-text-with-ids.csv` and triage files are out of date.
-- The audit passes for v1 but not v2, because of 2 rows whose `presentation_text` excerpt is wrong: the mention also appears on the preceding page and the excerpt was taken from there (row 77), and a mention spans more paragraphs than the excerpt includes (row 285). The selectors themselves are correct.
 
 ## Direction
 

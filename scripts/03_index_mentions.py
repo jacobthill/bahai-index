@@ -37,6 +37,8 @@ def cached_llm_call(prompt):
     if key in llm_cache:
         cache_stats['hits'] += 1
         return llm_cache[key]
+    if not client:
+        raise LLMError("No Gemini API key configured")
     cache_stats['calls'] += 1
     result = generate_json(client, prompt).get("exact_substrings", [])
     time.sleep(0.5)  # Rate limit protection; cached answers skip it
@@ -54,8 +56,6 @@ class LLMError(Exception):
 def get_llm_mentions(full_subject, main_subject, text):
     """Uses LLM to find the exact string as it appears in the text.
     Returns a (possibly empty) list on success; raises LLMError on failure."""
-    if not client:
-        raise LLMError("No Gemini API key configured")
 
     prompt = f"""
     You are an expert historian. I have an index entry from a book, and the text of the page it points to.
@@ -73,20 +73,31 @@ def get_llm_mentions(full_subject, main_subject, text):
     """
     try:
         return cached_llm_call(prompt)
+    except LLMError:
+        raise
     except Exception as e:
         raise LLMError(f"{type(e).__name__}: {e}") from e
 
-def get_presentation_text(pre, tgt, post, term, exact_snippet):
-    """Stitches pages and isolates the specific paragraph containing the exact snippet."""
+def get_presentation_text(pre, tgt, post, start, end):
+    """Builds a readable excerpt around a mention: the paragraphs it spans on the target page,
+    plus one paragraph before and after. start/end are the mention's character positions in tgt,
+    so the same words appearing on a neighbouring page can't be picked up by mistake."""
     pre = str(pre) if pd.notna(pre) else ""
     tgt = str(tgt) if pd.notna(tgt) else ""
     post = str(post) if pd.notna(post) else ""
 
     # Join with a space to bridge the page gap
     full_text = f"{pre} {tgt} {post}"
+    offset = len(pre) + 1
+    mention_start, mention_end = offset + start, offset + end
 
-    raw_blocks = [b.strip() for b in full_text.split('\n\n') if b.strip()]
-    if not raw_blocks: return ""
+    # Split into blocks, keeping each block's position in full_text
+    blocks, pos = [], 0
+    for part in full_text.split('\n\n'):
+        if part.strip():
+            blocks.append((part.strip(), pos, pos + len(part)))
+        pos += len(part) + 2
+    if not blocks: return ""
 
     def should_merge(current, next_b):
         """Smarter heuristic to handle OCR breaks, abbreviations, and parentheticals."""
@@ -109,43 +120,32 @@ def get_presentation_text(pre, tgt, post, term, exact_snippet):
 
         return False
 
-    paragraphs = []
-    current = raw_blocks[0]
-    for i in range(1, len(raw_blocks)):
-        next_b = raw_blocks[i]
-        if should_merge(current, next_b):
-            current = current + " " + next_b
+    # Heal blocks into paragraphs, keeping each paragraph's span in full_text
+    paragraphs = []  # (text, span_start, span_end)
+    text, span_start, span_end = blocks[0]
+    for next_text, next_start, next_end in blocks[1:]:
+        if should_merge(text, next_text):
+            text, span_end = text + " " + next_text, next_end
         else:
-            paragraphs.append(current)
-            current = next_b
-    paragraphs.append(current)
+            paragraphs.append((text, span_start, span_end))
+            text, span_start, span_end = next_text, next_start, next_end
+    paragraphs.append((text, span_start, span_end))
 
-    # Clean whitespace for reliable matching across healed paragraphs
-    snippet_clean = " ".join(exact_snippet.split())
+    def paragraph_at(char_pos):
+        for i, (_, s, e) in enumerate(paragraphs):
+            if s <= char_pos <= e:
+                return i
+        return None
 
-    target_idx = -1
-    # 1. Primary Match: Find the healed paragraph that contains our raw paragraph snippet
-    for i, p in enumerate(paragraphs):
-        p_clean = " ".join(p.split())
-        if snippet_clean and snippet_clean in p_clean:
-            target_idx = i
-            break
+    first_idx = paragraph_at(mention_start)
+    last_idx = paragraph_at(max(mention_start, mention_end - 1))
+    if first_idx is None: return ""
+    if last_idx is None: last_idx = first_idx
 
-    # 2. Fallback: If healing severely mangled things, just find the term
-    if target_idx == -1:
-        for i, p in enumerate(paragraphs):
-            if term in p:
-                target_idx = i
-                # If it's the very first paragraph, keep looking just in case there's a better one
-                # deeper in the text, but hold onto it if it's the only one.
-                if i != 0: break
-
-    if target_idx == -1: return ""
-
-    # Grab the target paragraph, plus one before and one after for context
-    start_idx = max(0, target_idx - 1)
-    end_idx = min(len(paragraphs), target_idx + 2)
-    return "\n\n".join(paragraphs[start_idx:end_idx])
+    # The paragraphs the mention spans, plus one before and one after for context
+    start_idx = max(0, first_idx - 1)
+    end_idx = min(len(paragraphs), last_idx + 2)
+    return "\n\n".join(p[0] for p in paragraphs[start_idx:end_idx])
 
 # --- PART 2: MAIN PROCESSING LOOP ---
 
@@ -248,7 +248,7 @@ def process(paths):
             continue
 
         # 6. SUCCESSFUL EXTRACTION
-        for term in set(search_terms):
+        for term in dict.fromkeys(search_terms):  # unique, in a fixed order
             match = re.search(re.escape(term), tgt)
             if match:
                 start, end = match.start(), match.end()
@@ -258,18 +258,7 @@ def process(paths):
                 nr['target_selector_prefix'] = tgt[max(0, start-PREFIX_SUFFIX_LENGTH):start]
                 nr['target_selector_suffix'] = tgt[end:end+PREFIX_SUFFIX_LENGTH]
 
-                # Extract the exact raw paragraph from tgt, bounded by \n\n
-                blocks = tgt.split('\n\n')
-                exact_snippet = ""
-                char_count = 0
-                for b in blocks:
-                    block_len = len(b)
-                    if char_count <= start <= char_count + block_len:
-                        exact_snippet = b.strip()
-                        break
-                    char_count += block_len + 2
-
-                nr['presentation_text'] = get_presentation_text(pre, tgt, post, term, exact_snippet)
+                nr['presentation_text'] = get_presentation_text(pre, tgt, post, start, end)
                 new_rows.append(nr)
 
     final_df = pd.DataFrame(new_rows)

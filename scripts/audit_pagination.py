@@ -55,19 +55,20 @@ def verify_context(row):
 
     structure_err = None
 
+    # The excerpt is the paragraphs the selector spans, plus one before and one after
+    sel_paragraphs = len([p for p in re.split(r'\n\s*\n', sel) if p.strip()]) or 1
+    max_p = sel_paragraphs + 2
+
     if num_p == 0:
         structure_err = "No paragraphs found"
-    elif num_p > 3:
-        structure_err = f"Expected max 3 paragraphs, found {num_p}"
+    elif num_p > max_p:
+        structure_err = f"Expected max {max_p} paragraphs, found {num_p}"
     elif norm_sel:
         found_in_valid_p = False
 
-        if num_p == 3:
-            valid_indices = [1] # Must be middle
-        elif num_p == 2:
-            valid_indices = [0, 1] # Could be start or end of a boundary block
-        else:
-            valid_indices = [0] # Only 1 paragraph exists
+        # The selector starts in the first paragraph (excerpt begins at the mention)
+        # or the second (one paragraph of context before it)
+        valid_indices = [0, 1] if num_p >= 2 else [0]
 
         # Check if the full selector OR any of its valid chunks anchor in the expected paragraph
         sel_chunks = [normalize_whitespace(p) for p in re.split(r'\n\s*\n', sel) if p.strip()]
