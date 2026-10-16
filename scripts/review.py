@@ -66,10 +66,18 @@ def summarize(group):
 
 # --- Candidates and cross-references ---
 
-def build_name_index():
-    """(key, id, label) for every name of every entity in bahai-data and in the drafts."""
+def build_name_index(rows=()):
+    """(key, id, label) for every name of every entity in bahai-data and in the drafts, and for
+    other review rows' suggested new entities (so spelling variants across volumes, e.g.
+    'Biutsov, Evgenii' and 'Biutsov, Yevgenii', show each other as candidates)."""
     existing, _ = load_existing()
     index = []
+    for row in rows:
+        if row['suggestion'].startswith('new:'):
+            uid = row['suggestion'].split(':', 1)[1]
+            for key in {normalize_for_match(row['text']), normalize_for_match(flip_comma_name(row['text']))}:
+                if key:
+                    index.append((key, uid, f"{status_of(row)} row: {row['text']}"))
     for uid, r in list(existing.items()) + list(load_drafts().items()):
         label = record_names(r)[0] if record_names(r) else uid
         for name in record_names(r):
@@ -287,7 +295,7 @@ def build(batch_size, use_llm):
     head_cats = classify(client, new_headings) if use_llm and new_headings else {}
     sub_cats = classify(client, new_subs, subentries=True) if use_llm and new_subs else {}
 
-    name_index = build_name_index()
+    name_index = build_name_index(rows)
     cross_refs = load_cross_refs()
 
     for text in new_headings:
@@ -312,6 +320,8 @@ def build(batch_size, use_llm):
         rows.append(row); by_key[('subentry', normalize_for_match(text))] = row
 
     # Refresh the script's columns on every row; verdict and notes are left alone
+    name_index = build_name_index(rows)   # now including the rows just added
+    _candidate_cache.clear()
     for row in rows:
         key = normalize_for_match(row['text'])
         group = entries[(entries['full_key'] == key) if row['kind'] == 'subentry' else (entries['heading_key'] == key)]
@@ -320,9 +330,22 @@ def build(batch_size, use_llm):
         if row['kind'] == 'subentry':
             row['subentries'] = ""
         if status_of(row) == 'proposed':
-            row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in find_candidates(row['text'], name_index))
+            own = row['suggestion'].split(':', 1)[1] if ':' in row['suggestion'] else None
+            row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in
+                                          find_candidates(row['text'], name_index, n=4) if u != own)
         row['cross_refs'] = "; ".join(dict.fromkeys(cross_refs.get(key, [])))
         row['status'] = status_of(row)
+
+    # Decisions that attach to no index entry, and whose entity no entry matches through any other
+    # name either: usually the text changed after a parser fix. (A name that isn't printed in
+    # these indexes, like 'Koran', is fine as long as its entity matches something.)
+    matched_ids = set(entries['id'].dropna())
+    orphaned = [r for r in rows if r['mentions'] == '0' and (
+        r['status'] == 'ignored' or (r['status'] == 'approved' and (decision(r) or ':').split(':', 1)[1] not in matched_ids))]
+    if orphaned:
+        print(f"  [!] {len(orphaned)} decided rows match no index entry; update their text or remove them:")
+        for r in orphaned:
+            print(f"      {r['kind']}: '{r['text']}' ({r['verdict']}: {r['suggestion']})")
 
     # Batch: the rows that most need work
     def needs_work(row):
