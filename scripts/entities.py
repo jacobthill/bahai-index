@@ -42,6 +42,10 @@ def normalize_for_match(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+def without_parenthetical(name):
+    """'Istanbul (Constantinople)' -> 'Istanbul'. The index often adds another name in parentheses."""
+    return re.sub(r'\s*\([^)]*\)', '', str(name)).strip()
+
 def match_keys(name):
     """The normalized forms a name is matched under: as written, and with 'Last, First' flipped."""
     keys = {normalize_for_match(name)}
@@ -116,14 +120,16 @@ def build_lookup():
         for name in record_names(r):
             claim(name, uid, 'exists')
 
+    review = load_review()
+    approved_new_ids = {d.split(':', 1)[1] for d in map(decision, review) if d and d.startswith('new:')}
     approved_links = approved_new = 0
-    for row in load_review():
+    for row in review:
         d = decision(row)
         if not d or d == 'ignore':
             continue
         kind, uid = d.split(':', 1)
         status = 'exists' if uid in known else 'pending'
-        if kind == 'link' and uid not in known and uid not in drafts:
+        if kind == 'link' and uid not in known and uid not in drafts and uid not in approved_new_ids:
             print(f"  [!] review.csv: '{row['text']}' links to unknown id {uid} (skipped)")
             continue
         claim(row['text'], uid, status)
@@ -150,8 +156,11 @@ def build_lookup():
 
 def resolve(subject, lookup):
     """Returns (id, status) for a heading, or (None, None) if no entity has that name.
-    Tries the heading as written before the 'Last, First' flip."""
-    for key in (normalize_for_match(subject), normalize_for_match(flip_comma_name(subject))):
+    Tries the heading as written, then 'Last, First' flipped, then both without a parenthetical
+    ('Istanbul (Constantinople)' -> 'Istanbul')."""
+    bare = without_parenthetical(subject)
+    for name in dict.fromkeys([subject, flip_comma_name(subject), bare, flip_comma_name(bare)]):
+        key = normalize_for_match(name)
         if key and key in lookup:
             return lookup[key]
     return (None, None)
