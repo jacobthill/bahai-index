@@ -30,7 +30,6 @@ from entities import (REVIEW_COLUMNS, build_lookup, resolve, resolve_entry, load
 LLM_CACHE = DATA_DIR / "cache" / "review_llm.jsonl"
 PREFIXES = {"person": "person_", "place": "place_", "group": "group_", "event": "event_",
             "subject": "subject_", "work": "work_"}
-MAX_EVIDENCE = 4          # excerpts per draft
 EVIDENCE_CHARS = 1500     # characters per excerpt
 
 # --- Gathering entries ---
@@ -189,7 +188,7 @@ def suggest_new(category, text, taken):
 # --- Drafting full records ---
 
 REQUIRED = {
-    "person": '"birth_date": "YYYY-MM-DD" or null, "death_date": "YYYY-MM-DD" or null',
+    "person": '"birth_date": "YYYY-MM-DD" (or "YYYY" if the sources give only the year) or null, "death_date": the same',
     "place": '"location": {"latitude": number, "longitude": number}',
     "group": '"type": short type (e.g. "Religious Community", "Organization"), "start_date": ... or null, "end_date": ... or null',
     "event": '"start_date": "YYYY-MM-DD" (or YYYY-MM / YYYY) or null, "end_date": ... or null',
@@ -210,7 +209,10 @@ def to_bahai_style(value):
     return value
 
 def needs_fields(record):
-    """True if a draft is missing fields bahai-data requires (or a place lacks coordinates)."""
+    """True if a draft is missing fields bahai-data requires (or a place lacks coordinates).
+    A draft marked needs_research (the sources weren't enough) waits for you instead."""
+    if record.get('needs_research'):
+        return False
     if not record.get('description'):
         return True
     if record.get('record_type') == 'place':
@@ -218,43 +220,148 @@ def needs_fields(record):
         return loc.get('latitude') is None or loc.get('longitude') is None
     return False
 
+BOOK = "Shahvar et al., The Baha'is of Iran, Transcaspia and the Caucasus"
+MAX_PASSAGES = 5          # passages from the main text, besides the editors' note
+
+def _spread(items, n):
+    """n items spread evenly across a list (first, last, and in between)."""
+    if len(items) <= n:
+        return items
+    step = (len(items) - 1) / (n - 1)
+    return [items[round(i * step)] for i in range(n)]
+
+def _around(text, mention, width=EVIDENCE_CHARS):
+    """About width characters of text centred on the mention, cut at word boundaries."""
+    i = text.find(mention)
+    if i < 0 or len(text) <= width:
+        return text[:width]
+    start = max(0, i + len(mention) // 2 - width // 2)
+    start = text.rfind(' ', 0, start) + 1 if start else 0
+    end = text.find(' ', min(len(text), start + width))
+    return ("… " if start else "") + text[start:end if end > 0 else len(text)].strip() + (" …" if end > 0 else "")
+
 def evidence_for(entries, row):
-    """Excerpts and pages for a review row, for drafting and provenance."""
+    """The sources for drafting a row, as (labelled sources, all pages).
+
+    First the editors' own entry, if the book has one: the biographical note (the index's
+    italic page numbers) or the glossary entry. Then up to MAX_PASSAGES passages from distinct
+    pages where the mention was found in the text, spread across the heading's range."""
+    from book_notes import find_note
     key = normalize_for_match(row['text'])
     sel = entries[(entries['full_key'] == key) if row['kind'] == 'subentry' else (entries['heading_key'] == key)]
-    sel = sel[sel['presentation_text'].fillna("").str.len() > 0]
-    excerpts = [f"[vol. {r.volume}, p. {r.page}] {str(r.presentation_text)[:EVIDENCE_CHARS]}" for r in sel.head(MAX_EVIDENCE).itertuples()]
-    pages = [{"volume": r.volume, "page": str(r.page)} for r in sel.itertuples()]
-    return excerpts, pages
+    sources = []
+
+    heading = row['text'].split(': ', 1)[0] if row['kind'] == 'subentry' else row['text']
+    heading_rows = entries[entries['heading_key'] == normalize_for_match(heading)]
+    for vol in sorted(heading_rows['volume'].unique()):
+        vol_rows = heading_rows[heading_rows['volume'] == vol]
+        note_pages = vol_rows[vol_rows['type'] == 'biographical_note']['page'].tolist()
+        note = find_note(heading, vol, note_pages) if note_pages else find_note(heading, vol, kind="glossary")
+        if note and not any(s['text'] == note['text'] for s in sources):
+            about = " (about the heading)" if row['kind'] == 'subentry' else ""
+            sources.append({"label": f"{note['kind']}, vol. {vol}, p. {note['page']}{about}",
+                            "cite": f"vol. {vol}, p. {note['page']} ({note['kind']})", "text": note['text']})
+
+    located = sel[sel['target_selector'].notna() & (sel['type'] != 'biographical_note')
+                  & (sel['presentation_text'].fillna("").str.len() > 0)]
+    located = located.drop_duplicates(['volume', 'page'])
+    for r in _spread(list(located.itertuples()), MAX_PASSAGES):
+        sources.append({"label": f"vol. {r.volume}, p. {r.page}", "cite": f"vol. {r.volume}, p. {r.page}",
+                        "text": _around(str(r.presentation_text), str(r.target_selector))})
+
+    pages = list({(r.volume, str(r.page)): {"volume": r.volume, "page": str(r.page)} for r in sel.itertuples()}.values())
+    return sources, pages
+
+NOTE_DATES = re.compile(r'^\(\s*(?:(d|b)\.\s*)?(?:c\.\s*)?(\d{4})(?:/\d+)?(?:\s*[–-]\s*(\d{2,4}))?')
+
+def dates_from_note(note_text, heading):
+    """(birth, death) years printed at the start of a biographical note, e.g.
+    'Kuropatkin, Aleksei Nikolaevich (1848–1925), ...' -> ('1848', '1925'); '(d. 1892)' -> (None, '1892')."""
+    m = NOTE_DATES.search(note_text[note_text.find('('):]) if '(' in note_text[:120] else None
+    if not m:
+        return None, None
+    kind, first, second = m.groups()
+    if kind == 'd':
+        return None, first
+    if kind == 'b':
+        return first, None
+    if second and len(second) == 2:
+        second = first[:2] + second
+    return first, second
+
+def _year_forms(text):
+    """Every year in text, including the ends of abbreviated ranges ('1902–11' -> 1911)."""
+    years = set(re.findall(r'\b1[5-9]\d\d\b', text))
+    for start, end in re.findall(r'\b(1[5-9]\d\d)\s*[–-]\s*(\d{1,2})\b', text):
+        years.add(start[:4 - len(end)] + end)
+    return years
+
+def unsupported_years(record, sources):
+    """Years in a draft's description or dates that don't appear in its sources."""
+    claimed = " ".join(str(record.get(k) or "") for k in ("birth_date", "death_date", "start_date", "end_date"))
+    claimed += " " + ((record.get("description") or {}).get("value") or "")
+    found = _year_forms(" ".join(s['text'] for s in sources))
+    return sorted(y for y in set(re.findall(r'\b1[5-9]\d\d\b', claimed)) if y not in found)
 
 def draft_record(client, uid, row, entries, participant_id, existing_draft):
     category = next(c for c, p in PREFIXES.items() if uid.startswith(p))
-    excerpts, pages = evidence_for(entries, row)
+    sources, pages = evidence_for(entries, row)
     names = record_names(existing_draft) if existing_draft else [row['text']]
     participant = f'\nThe event involves the entity {participant_id}; include {{"type": "has_participant", "related_id": "{participant_id}"}} in relationships.' if category == "event" and participant_id else ""
-    prompt = f"""You are a historian writing an authority record for a knowledge graph, from passages of
-Shahvar et al., The Baha'is of Iran, Transcaspia and the Caucasus (index entry: "{row['text']}").
+    labelled = "\n\n".join(f"[{s['label']}]\n{s['text']}" for s in sources)
+    prompt = f"""You are a historian writing an authority record for a knowledge graph, using ONLY the sources below,
+from {BOOK} (index entry: "{row['text']}").
 Entity id: {uid} (type: {category}). Known names: {json.dumps(names, ensure_ascii=False)}.{participant}
 
+Rules:
+- The description must say only what the sources say. Prefer the editors' biographical note or glossary entry if there is one.
+- Do NOT add facts from general knowledge to the description or the dates. If you know something the sources
+  don't say, put it in draft_notes, marked as unverified.
+- If the sources are not enough for a factual description, set "description" to null and explain in draft_notes.
+- Write names in the Bahá'í transliteration system used by the existing records, with acute accents and
+  underdots, not macrons (e.g. Baháʼuʼlláh, Bábí, Mírzá, Ṭihrán, ʻAbdu'l-Bahá).
+
 Write ONE JSON object with exactly these keys:
-"preferred_label": {{"value": scholarly form of the name with diacritics if known, "lang": "en"}},
-"variant_labels": list of {{"value": ..., "lang": BCP 47 code}} (include the index spelling, and Persian/Arabic/Russian forms if you are confident),
-"description": {{"value": 1–3 factual sentences, "lang": "en"}},
-{REQUIRED[category]},
+"preferred_label": {{"value": scholarly form of the name, "lang": "en"}},
+"variant_labels": list of {{"value": ..., "lang": BCP 47 code}} (the index spelling and other forms in the sources; others only if certain),
+"description": {{"value": 1–3 factual sentences, "lang": "en"}} or null,
+"description_sources": list of the source labels (in square brackets below) that the description is based on,
+{REQUIRED[category]} (from the sources only; null if they don't say),
 "relationships": list of {{"type": snake_case relation, "related_id": an id}} (only ids given above; otherwise []),
-"draft_notes": a short note on anything uncertain or taken from general knowledge rather than the passages (e.g. coordinates, dates).
+"draft_notes": what is uncertain, and anything from general knowledge (unverified), e.g. coordinates.
 
-Write names in the Bahá'í transliteration system used by the existing records, with acute accents and
-underdots, not macrons (e.g. Baháʼuʼlláh, Bábí, Mírzá, Ṭihrán, ʻAbdu'l-Bahá).
-Use the passages first; use well-established general knowledge only where they are silent, and say so in draft_notes.
-Use null for anything unknown. Do not invent dates.
-
-Passages:
-{chr(10).join(excerpts) if excerpts else "(no passages available)"}"""
+Sources:
+{labelled if labelled else "(no sources available)"}"""
     record = to_bahai_style(cached_generate_json(client, prompt, LLM_CACHE))
+    used = record.pop("description_sources", None) or []
+    cites = [s['cite'] for s in sources if s['label'] in used] or ([sources[0]['cite']] if record.get("description") and sources else [])
+    if isinstance(record.get("description"), dict) and record["description"].get("value"):
+        record["description"]["source"] = f"{BOOK}, " + "; ".join(cites) if cites else None
+    else:
+        record["description"] = None
+        record["needs_research"] = True
     record = dict({"id": uid, "record_type": category}, **record)
     record["status"] = "draft"
     record["draft_sources"] = pages
+    finish_draft(record, sources)
+    return record
+
+def finish_draft(record, sources):
+    """Checks a draft against its sources: fills birth/death years printed in the editors'
+    biographical note, and flags any year not found in the sources."""
+    if record.get("record_type") == "person":
+        note = next((s for s in sources if s['label'].startswith("biographical note") and "about the heading" not in s['label']), None)
+        if note:
+            born, died = dates_from_note(note['text'], record.get("id"))
+            if not record.get("birth_date") and born:
+                record["birth_date"] = born
+            if not record.get("death_date") and died:
+                record["death_date"] = died
+    missing = unsupported_years(record, sources)
+    if missing:
+        flag = f"CHECK: the years {', '.join(missing)} do not appear in the sources."
+        if flag not in (record.get("draft_notes") or ""):
+            record["draft_notes"] = f"{flag} {record.get('draft_notes') or ''}".strip()
     return record
 
 def merge_draft(existing, new):
@@ -269,6 +376,10 @@ def merge_draft(existing, new):
     return merged
 
 # --- Build ---
+
+def entity_id(d):
+    """'new:place_baku' or 'link:place_baku' -> 'place_baku'; '' for 'ignore' or nothing."""
+    return d.split(':', 1)[1] if d and ':' in d else ''
 
 def status_of(row):
     if row['status'] == 'applied':
@@ -341,7 +452,7 @@ def build(batch_size, use_llm):
         if row['kind'] == 'subentry':
             row['subentries'] = ""
         # Refreshed on every row, so decided rows never show entities that no longer exist
-        own = (decision(row) or row['suggestion'] or ':').split(':', 1)[1] or None
+        own = entity_id(decision(row) or row['suggestion']) or None
         row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in
                                       find_candidates(row['text'], name_index, n=4) if u != own)
         row['cross_refs'] = "; ".join(dict.fromkeys(cross_refs.get(key, [])))
@@ -352,11 +463,25 @@ def build(batch_size, use_llm):
     # these indexes, like 'Koran', is fine as long as its entity matches something.)
     matched_ids = set(entries['id'].dropna())
     orphaned = [r for r in rows if r['mentions'] == '0' and (
-        r['status'] == 'ignored' or (r['status'] == 'approved' and (decision(r) or ':').split(':', 1)[1] not in matched_ids))]
+        r['status'] == 'ignored' or (r['status'] == 'approved' and entity_id(decision(r)) not in matched_ids))]
     if orphaned:
         print(f"  [!] {len(orphaned)} decided rows match no index entry; update their text or remove them:")
         for r in orphaned:
             print(f"      {r['kind']}: '{r['text']}' ({r['verdict']}: {r['suggestion']})")
+
+    # A draft whose row now uses a different ID (you changed it) moves to the new ID
+    in_use = {entity_id(decision(r) or r['suggestion']) for r in rows} - {''}
+    for r in rows:
+        uid = entity_id(decision(r) or r['suggestion'])
+        if not uid or uid in drafts:
+            continue
+        key = normalize_for_match(r['text'])
+        for old_id, rec in list(drafts.items()):
+            if old_id not in in_use and key in {normalize_for_match(n) for n in record_names(rec)}:
+                drafts[uid] = dict(rec, id=uid)
+                del drafts[old_id]
+                print(f"  Moved draft {old_id} -> {uid} (the row's ID was changed)")
+                break
 
     # Batch: the rows that most need work
     def needs_work(row):
