@@ -12,10 +12,10 @@ DATA_DIR = PROJECT_ROOT / "data"
 # bahai-data is the only definition of which entities exist; read from a sibling checkout
 BAHAI_DATA_DIR = PROJECT_ROOT.parent / "bahai-data" / "data"
 
-# Hand-edited, tracked in git: entities and labels approved but not yet in bahai-data
+# Hand-edited, tracked in git: review decisions and draft records not yet in bahai-data
 CURATED_DIR = PROJECT_ROOT / "curated"
-NEW_ENTITIES_JSONL = CURATED_DIR / "new_entities.jsonl"
-NEW_LABELS_CSV = CURATED_DIR / "new_labels.csv"
+REVIEW_CSV = CURATED_DIR / "review.csv"
+DRAFTS_JSONL = CURATED_DIR / "drafts.jsonl"
 CORRECTIONS_CSV = CURATED_DIR / "corrections.csv"
 
 VOLUMES = ("1", "2")
@@ -44,7 +44,6 @@ def volume_paths(vol):
         context_csv=DATA_DIR / "csv_plus_text" / f"{name}-text-context.csv",  # step 02
         final_csv=DATA_DIR / "csv_final" / f"{name}-text-final.csv",          # step 03
         with_ids_csv=DATA_DIR / "csv_final" / f"{name}-text-with-ids.csv",    # step 04
-        triage_csv=DATA_DIR / "csv_final" / f"triage_review_v{vol}.csv",      # step 04
     )
 
 def apply_corrections(df, vol):
@@ -83,6 +82,34 @@ def get_gemini_client():
         print("WARNING: No Gemini API Key found. LLM calls will be marked as failures.")
         return None
     return genai.Client(api_key=api_key)
+
+_json_caches = {}
+
+def cached_generate_json(client, prompt, cache_path):
+    """generate_json with a JSONL cache keyed by model + prompt, so re-runs only call Gemini
+    for prompts not seen before. Only successful answers are cached. Raises on failure."""
+    import hashlib
+    if cache_path not in _json_caches:
+        cache = {}
+        if cache_path.exists():
+            with open(cache_path, encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        entry = json.loads(line)
+                        cache[entry['key']] = entry['response']
+        _json_caches[cache_path] = cache
+    cache = _json_caches[cache_path]
+    key = hashlib.sha256(f"{GEMINI_MODEL}\n{prompt}".encode('utf-8')).hexdigest()
+    if key in cache:
+        return cache[key]
+    if not client:
+        raise RuntimeError("No Gemini API key configured")
+    response = generate_json(client, prompt)
+    cache[key] = response
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'key': key, 'response': response}, ensure_ascii=False) + "\n")
+    return response
 
 def generate_json(client, prompt):
     """Sends a prompt to Gemini and parses the JSON response. Raises on any failure."""

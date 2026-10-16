@@ -25,31 +25,26 @@ Run each step with `uv run python scripts/<script> ...`, from any directory. Ste
    - Running-header titles (e.g. "LETTERS OF ALEKSANDR TUMANSKII") are dropped from the page text, so they can't be matched as mentions. Page numbers are kept for the audit. Each volume's header position is `HEADER_BANDS` in `scripts/common.py`.
 3. Run `03_index_mentions.py 1` and `03_index_mentions.py 2` to find the mention of the indexed entity in the text. --> csv_final
    - Gemini's answers are cached in `data/cache/step03_llm.jsonl`, so a re-run only calls Gemini for entries whose heading or page text changed. Delete the file to start fresh.
-   - Check the output with `audit_pagination.py 1` / `audit_pagination.py 2`. It prints a diagnostic report and exits with code 1 if it finds warnings, so it can gate step 4: `uv run python scripts/audit_pagination.py 1 && uv run python scripts/04_triage_entities.py 1`.
-4. Run `04_triage_entities.py 1` and `04_triage_entities.py 2` to match each entry to an entity and triage the rest. An entry is matched on its full text first (heading and subentry, which can name a specific event), then on its heading alone; `id_matched_on` records which. Unmatched entries are grouped by heading, so each heading is one decision. --> bahais-of-iran-transcaspia-caucasus-v?-text-with-ids.csv, triage_review_v?.csv. Refuses to run if those files already exist; move them first.
-5. Manually review all ids and categories in triage_review_v?.csv. Save the reviewed copy under a different name so a re-run of step 4 can't be confused with it.
+   - Check the output with `audit_pagination.py 1` / `audit_pagination.py 2`. It prints a diagnostic report and exits with code 1 if it finds warnings, so it can gate the next steps: `uv run python scripts/audit_pagination.py 1 && uv run python scripts/review.py build`.
+4. Run `review.py build` to update the review sheet, `curated/review.csv`, from both volumes: one row per heading that doesn't match an entity, and per subentry that may be an entity of its own, with likely existing entities, the index's cross-references, and a suggestion. `--batch 50` (the default) also asks Gemini to draft full records, into `curated/drafts.jsonl`, for the 50 rows that most need work. Your verdicts and notes are never changed. See `curated/README.md`.
+5. Review the batch in `curated/review.csv` (fill in `verdict`) and `curated/drafts.jsonl` (check the drafts, especially `draft_notes`).
+6. Run `04_match_entities.py 1` and `04_match_entities.py 2` to match each entry to an entity. --> bahais-of-iran-transcaspia-caucasus-v?-text-with-ids.csv. An entry is matched on its full text first (heading and subentry, which can name a specific event), then on its heading alone; `id_matched_on` records which.
 
 Shared paths, file names, and the Gemini model (`GEMINI_MODEL`) are set in `scripts/common.py`.
 
 ## Entity matching
 
-An entity exists only if it is in bahai-data. Step 4 matches index headings against the names and variant labels of the bahai-data authority files (people, places, events, groups, subjects, circular instructions), read directly from `../bahai-data/data` on every run, plus two curated files:
+An entity exists only if it is in bahai-data. Matching uses the names and variant labels of the bahai-data authority files (people, places, events, groups, subjects, circular instructions), read directly from `../bahai-data/data` on every run, plus your decisions in `curated/review.csv`: an approved link adds the row's text as a name of an existing entity, and an approved new entity (with its draft in `curated/drafts.jsonl`) is matched as `pending` until it is added to bahai-data.
 
-- `curated/new_entities.jsonl`: new entities approved but not yet added to bahai-data, as draft records in bahai-data's format.
-- `curated/new_labels.csv`: extra names (`id,label,lang,note`) for entities that exist in bahai-data, such as the index's spelling of a name.
-
-Each row of `-text-with-ids.csv` gets an `id` and an `id_status`: `exists` (the entity is in bahai-data) or `pending` (only in `new_entities.jsonl`). Names shared by two entities are reported and not matched, so they go to review instead of being guessed. Works are not matched by title, since titles such as "Baghdad" cause false matches; names for works go in `new_labels.csv`. Matching code is in `scripts/entities.py`.
+Each row of `-text-with-ids.csv` gets an `id` and an `id_status`: `exists` or `pending`. Names shared by two entities are reported and not matched, so they go to review instead of being guessed. Works are not matched by title, since titles such as "Baghdad" cause false matches; works are matched only through approved review rows. Matching code is in `scripts/entities.py`.
 
 ## Known issues
 
-- Manual review (step 5) is not read by any script, so reviewed decisions do not reach bahai-data or later runs.
-- `new_entities.jsonl` holds 24 entities added by hand during earlier review. They are drafts: descriptions, coordinates, and dates still need to be filled in before they can go to bahai-data.
-- Step 4 has not been re-run since steps 1–3 changed, so the `-text-with-ids.csv` and triage files are out of date.
+- Approved decisions are not yet written to bahai-data; that is the next step (an apply script that writes them to a new bahai-data branch for review).
 
 ## Direction
 
 Agreed but not yet implemented:
 
-- Replace the triage file with a review sheet of proposed actions (link to an existing entity, create one, ignore), and an apply script that writes approved changes to bahai-data on a new branch.
-- Model subentries such as "Bab, the: execution of" as events, like existing bahai-data events.
-- Export one manifestation per volume (text in `bahai-data/data/copyright/`) and annotations with a `page` field, which bahai-rag uses to cite by book and page.
+- An apply script that writes approved review rows and drafts to bahai-data on a new branch, and marks them `applied`.
+- Export one manifestation per volume (text in `bahai-data/data/copyright/`) and annotations with a `page` field, which bahai-rag uses to cite by book and page. An entry matched on a subentry entity (e.g. an event) should also be annotated with its heading's entity.
