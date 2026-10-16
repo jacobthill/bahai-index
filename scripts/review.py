@@ -340,10 +340,10 @@ def build(batch_size, use_llm):
         row.update(info)
         if row['kind'] == 'subentry':
             row['subentries'] = ""
+        # Refreshed on every row, so decided rows never show entities that no longer exist
         own = (decision(row) or row['suggestion'] or ':').split(':', 1)[1] or None
-        if True:  # refreshed on every row, so decided rows never show stale candidates
-            row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in
-                                          find_candidates(row['text'], name_index, n=4) if u != own)
+        row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in
+                                      find_candidates(row['text'], name_index, n=4) if u != own)
         row['cross_refs'] = "; ".join(dict.fromkeys(cross_refs.get(key, [])))
         row['status'] = status_of(row)
 
