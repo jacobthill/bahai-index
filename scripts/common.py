@@ -25,6 +25,12 @@ BASE_NAME = "bahais-of-iran-transcaspia-caucasus-v{vol}"
 # Checked against every page: nothing else is printed there.
 HEADER_BANDS = {"1": (30, 50), "2": (60, 80)}
 
+# Pages of each PDF (1-based) holding the editors' biographical notes and glossary
+NOTE_SECTIONS = {
+    "1": {"biographical note": range(197, 217), "glossary": range(217, 220)},
+    "2": {"biographical note": range(167, 188), "glossary": range(189, 193)},
+}
+
 # Pages of each PDF (1-based) that hold the index
 INDEX_PAGES = {"1": range(290, 310), "2": range(229, 337)}
 
@@ -38,6 +44,7 @@ def volume_paths(vol):
         vol=vol,
         header_band=HEADER_BANDS[vol],
         index_pages=list(INDEX_PAGES[vol]),
+        note_sections=NOTE_SECTIONS[vol],
         pdf=DATA_DIR / "raw" / f"{name}.pdf",
         extracted_csv=DATA_DIR / "extracted_csv" / f"{name}.csv",           # step 01
         cross_refs_csv=DATA_DIR / "extracted_csv" / f"{name}-cross-references.csv",  # cross_references.py
