@@ -24,7 +24,7 @@ from collections import Counter, defaultdict
 import pandas as pd
 from common import (volume_paths, VOLUMES, REVIEW_CSV, DRAFTS_JSONL, DATA_DIR,
                     get_gemini_client, cached_generate_json)
-from entities import (REVIEW_COLUMNS, build_lookup, resolve_entry, load_review, decision,
+from entities import (REVIEW_COLUMNS, build_lookup, resolve, resolve_entry, load_review, decision,
                       load_existing, load_drafts, record_names, normalize_for_match, flip_comma_name)
 
 LLM_CACHE = DATA_DIR / "cache" / "review_llm.jsonl"
@@ -97,7 +97,8 @@ def find_candidates(text, name_index, n=3):
     """Likely existing entities for a heading, as [(id, label, score)], best first."""
     if text in _candidate_cache:
         return _candidate_cache[text]
-    keys = {normalize_for_match(text), normalize_for_match(flip_comma_name(text))} - {""}
+    keys = {normalize_for_match(text), normalize_for_match(flip_comma_name(text)),
+            normalize_for_match(natural_order(text))} - {""}
     distinctive = {w for k in keys for w in k.split() if len(w) >= 6 and w not in COMMON_WORDS}
     scores = {}
     for key, uid, label in name_index:
@@ -160,28 +161,30 @@ Headings: {json.dumps(chunk, ensure_ascii=False)}"""
             print(f"  [!] Gemini classification failed for {len(chunk)} items: {type(e).__name__}: {e}")
     return results
 
-def slug(text):
-    """A readable ID part: 'Babis/Baha'is: persecution of' -> 'persecution_of_babis_bahais',
-    'Ashgabat (Askhabad): Baha'is of' -> 'bahais_of_ashgabat', 'Rozen, Baron Viktor' -> 'baron_viktor_rozen'."""
-    text = re.sub(r'\([^)]*\)', ' ', text).replace('/', ' ')
+def natural_order(text):
+    """'Baku: Baha'is of' -> "Baha'is of Baku"; 'Rozen, Baron Viktor' -> 'Baron Viktor Rozen'."""
+    text = re.sub(r'\s*\([^)]*\)', ' ', text).replace('/', ' ').strip()
     if ': ' in text:
         heading, sub = (t.strip() for t in text.split(': ', 1))
         heading = flip_comma_name(heading) if heading.count(',') == 1 else heading
         sub = re.sub(r'^and\s+', '', sub)
-        text = f"{sub} {heading}" if re.search(r'\b(of|by|in|to|on)$', sub) else f"{heading} {sub}"
-    elif text.count(',') == 1:
-        text = flip_comma_name(text)
-    text = normalize_for_match(text)
+        return f"{sub} {heading}" if re.search(r'\b(of|by|in|to|on)$', sub) else f"{heading} {sub}"
+    return flip_comma_name(text) if text.count(',') == 1 else text
+
+def slug(text):
+    """A readable ID part: 'Babis/Baha'is: persecution of' -> 'persecution_of_babis_bahais',
+    'Ashgabat (Askhabad): Baha'is of' -> 'bahais_of_ashgabat', 'Rozen, Baron Viktor' -> 'baron_viktor_rozen'."""
+    text = normalize_for_match(natural_order(text))
     return re.sub(r'\s+', '_', text)[:60].strip('_')
 
-def mint_id(category, text, taken):
-    """A new ID: prefix + simplified name, made unique against everything already used."""
-    base = PREFIXES[category] + slug(text)
-    uid, n = base, 2
-    while uid in taken:
-        uid, n = f"{base}_{n}", n + 1
+def suggest_new(category, text, taken):
+    """'new:<prefix + simplified name>', or 'link:<that id>' if the ID is already used: the same
+    simplified name almost always means the same entity, so a duplicate should not be created."""
+    uid = PREFIXES[category] + slug(text)
+    if uid in taken:
+        return f"link:{uid}"
     taken.add(uid)
-    return uid
+    return f"new:{uid}"
 
 # --- Drafting full records ---
 
@@ -306,7 +309,7 @@ def build(batch_size, use_llm):
         elif cat == 'ignore':
             suggestion = 'ignore'
         elif cat in PREFIXES:
-            suggestion = f"new:{mint_id(cat, text, taken)}"
+            suggestion = suggest_new(cat, text, taken)
         else:
             suggestion = ""
         row = dict({c: "" for c in REVIEW_COLUMNS}, kind='heading', text=text, suggestion=suggestion)
@@ -316,8 +319,16 @@ def build(batch_size, use_llm):
         if cat not in PREFIXES:
             continue   # describes its heading: no row needed
         row = dict({c: "" for c in REVIEW_COLUMNS}, kind='subentry', text=text,
-                   suggestion=f"new:{mint_id(cat, text, taken)}")
+                   suggestion=suggest_new(cat, text, taken))
         rows.append(row); by_key[('subentry', normalize_for_match(text))] = row
+
+    # Undecided heading rows that now match an entity (e.g. through a new matching rule) are dropped
+    lookup_now = build_lookup()
+    before = len(rows)
+    rows = [r for r in rows if not (r['kind'] == 'heading' and not r['verdict'].strip()
+                                    and resolve(r['text'], lookup_now)[0])]
+    if len(rows) < before:
+        print(f"Dropped {before - len(rows)} undecided rows that now match an entity")
 
     # Refresh the script's columns on every row; verdict and notes are left alone
     name_index = build_name_index(rows)   # now including the rows just added
@@ -329,10 +340,10 @@ def build(batch_size, use_llm):
         row.update(info)
         if row['kind'] == 'subentry':
             row['subentries'] = ""
-        if status_of(row) == 'proposed':
-            own = row['suggestion'].split(':', 1)[1] if ':' in row['suggestion'] else None
-            row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in
-                                          find_candidates(row['text'], name_index, n=4) if u != own)
+        # Refreshed on every row, so decided rows never show entities that no longer exist
+        own = (decision(row) or row['suggestion'] or ':').split(':', 1)[1] or None
+        row['candidates'] = "; ".join(f"{u} ({l}, {s:.2f})" for u, l, s in
+                                      find_candidates(row['text'], name_index, n=4) if u != own)
         row['cross_refs'] = "; ".join(dict.fromkeys(cross_refs.get(key, [])))
         row['status'] = status_of(row)
 
