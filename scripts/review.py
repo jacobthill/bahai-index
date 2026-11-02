@@ -445,6 +445,12 @@ def build(batch_size, use_llm, entity_type=None):
                                     and resolve(r['text'], lookup_now)[0])]
     if len(rows) < before:
         print(f"Dropped {before - len(rows)} undecided rows that now match an entity")
+    # Undecided rows whose text no longer appears in the index (e.g. a parser fix changed it) are dropped too
+    present = set(entries['heading_key']) | set(entries['full_key'])
+    stale = [r for r in rows if not r['verdict'].strip() and normalize_for_match(r['text']) not in present]
+    if stale:
+        rows = [r for r in rows if r not in stale]
+        print(f"Dropped {len(stale)} undecided rows whose text is no longer in the index: {[r['text'] for r in stale]}")
 
     # Refresh the script's columns on every row; verdict and notes are left alone
     name_index = build_name_index(rows)   # now including the rows just added
