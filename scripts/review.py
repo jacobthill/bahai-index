@@ -314,9 +314,14 @@ from {BOOK} (index entry: "{row['text']}").
 Entity id: {uid} (type: {category}). Known names: {json.dumps(names, ensure_ascii=False)}.{participant}
 
 Rules:
-- The description must say only what the sources say. Prefer the editors' biographical note or glossary entry if there is one.
+- Describe the entity itself, as modern scholarship understands it: what it is or was, when and where. Do not
+  summarize or describe the documents; they are linked to the entity separately.
+- The editors' own text (a biographical note or glossary entry, or the editors' introductions and footnotes) is the
+  authority for facts. Quoted historical documents (consular dispatches, letters, official reports) show that the
+  entity is mentioned and help identify it, but their statements can be wrong: do not repeat a claim from a
+  document that the editors' text contradicts, or that is doubtful.
 - Do NOT add facts from general knowledge to the description or the dates. If you know something the sources
-  don't say, put it in draft_notes, marked as unverified.
+  don't say, put it in draft_notes, marked as unverified, for the reviewer to confirm.
 - If the sources are not enough for a factual description, set "description" to null and explain in draft_notes.
 - Write names in the Bahá'í transliteration system used by the existing records, with acute accents and
   underdots, not macrons (e.g. Baháʼuʼlláh, Bábí, Mírzá, Ṭihrán, ʻAbdu'l-Bahá).
@@ -370,6 +375,8 @@ def merge_draft(existing, new):
     for key, value in new.items():
         if merged.get(key) in (None, "", [], {}) or (key == "location" and None in (merged.get(key) or {}).values()):
             merged[key] = value
+    if (existing.get("description") or {}).get("value"):
+        merged.pop("needs_research", None)   # the existing description stands; only other fields were missing
     names = {normalize_for_match(n) for n in record_names(existing)}
     merged["variant_labels"] = list(existing.get("variant_labels") or []) + [
         v for v in new.get("variant_labels") or [] if normalize_for_match(v.get("value") if isinstance(v, dict) else v) not in names]
@@ -387,7 +394,7 @@ def status_of(row):
     d = decision(row)
     return 'proposed' if d is None else ('ignored' if d == 'ignore' else 'approved')
 
-def build(batch_size, use_llm):
+def build(batch_size, use_llm, entity_type=None):
     client = get_gemini_client() if use_llm else None
     entries = load_entries()
     rows = load_review()
@@ -440,6 +447,12 @@ def build(batch_size, use_llm):
                                     and resolve(r['text'], lookup_now)[0])]
     if len(rows) < before:
         print(f"Dropped {before - len(rows)} undecided rows that now match an entity")
+    # Undecided rows whose text no longer appears in the index (e.g. a parser fix changed it) are dropped too
+    present = set(entries['heading_key']) | set(entries['full_key'])
+    stale = [r for r in rows if not r['verdict'].strip() and normalize_for_match(r['text']) not in present]
+    if stale:
+        rows = [r for r in rows if r not in stale]
+        print(f"Dropped {len(stale)} undecided rows whose text is no longer in the index: {[r['text'] for r in stale]}")
 
     # Refresh the script's columns on every row; verdict and notes are left alone
     name_index = build_name_index(rows)   # now including the rows just added
@@ -492,7 +505,12 @@ def build(batch_size, use_llm):
             d.split(':', 1)[1] not in drafts or needs_fields(drafts[d.split(':', 1)[1]]))
     numbered = [int(r['batch']) for r in rows if r['batch'].isdigit()]
     batch_no = str(max(numbered, default=0) + 1)
-    candidates = sorted([r for r in rows if needs_work(r) and not r['batch']], key=lambda r: -int(r['mentions'] or 0))
+    def type_of(row):
+        uid = entity_id(decision(row) or row['suggestion'])
+        return next((t for t, p in PREFIXES.items() if uid.startswith(p)), None)
+    candidates = sorted([r for r in rows if needs_work(r) and not r['batch']
+                         and (entity_type is None or type_of(r) == entity_type)],
+                        key=lambda r: -int(r['mentions'] or 0))
     batch = candidates[:batch_size] if batch_size else []
     for row in batch:
         row['batch'] = batch_no
@@ -536,6 +554,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build the review sheet and draft records.")
     parser.add_argument("command", choices=["build"])
     parser.add_argument("--batch", type=int, default=50, help="rows to select and draft (0: none)")
+    parser.add_argument("--type", choices=sorted(PREFIXES), help="only select rows of this type (from the decision, or the suggestion)")
     parser.add_argument("--no-llm", action="store_true", help="skip Gemini (no suggestions or drafts)")
     args = parser.parse_args()
-    build(args.batch, not args.no_llm)
+    build(args.batch, not args.no_llm, args.type)

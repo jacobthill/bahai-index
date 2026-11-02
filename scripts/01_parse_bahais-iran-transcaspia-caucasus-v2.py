@@ -13,8 +13,9 @@ def strip_header(text, y_coord):
 def is_page_num(text_str):
     text_str = text_str.strip(" \t\n\r,.;")
     if not text_str: return False
-    if re.match(r'^\d+n?\d*$', text_str): return True
-    if re.match(r'^\d+[-–—\u2013\u2014]\d+$', text_str): return True
+    if re.match(r'^\d+n?\d*$', text_str) or re.match(r'^\d+[-–—\u2013\u2014]\d+$', text_str):
+        # A four-digit number is a year in the heading ('Convention of 1844'), not a page
+        return int(re.match(r'^(\d+)', text_str).group(1)) <= 1000
     if re.match(r'^(x{0,3})(ix|iv|v?i{0,3})$', text_str) and text_str.islower() and len(text_str) > 0:
         return True
     return False

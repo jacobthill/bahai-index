@@ -11,7 +11,7 @@ import argparse
 import html
 import re
 from common import DATA_DIR
-from entities import load_review, decision, load_drafts
+from entities import load_review, decision, load_drafts, load_existing
 from review import load_entries, evidence_for
 
 CSS = """
@@ -30,9 +30,13 @@ mark { background:var(--mark); color:inherit; padding:0 2px; border-radius:3px; 
 code { font-size:13px; }
 """
 
+def proposal(row):
+    """What the row would do: its decision if decided, otherwise the script's suggestion."""
+    return decision(row) or row["suggestion"].strip()
+
 def decided_id(row):
-    """The entity ID a row's decision points to, or '' (undecided or ignored)."""
-    d = decision(row) or ""
+    """The entity ID the row's decision, or else its suggestion, points to ('' for ignore)."""
+    d = proposal(row)
     return d.split(":", 1)[1] if ":" in d else ""
 
 def esc(x):
@@ -45,15 +49,34 @@ def highlight(text, names):
     return out
 
 def render_row(row, draft, entries):
-    d = decision(row) or ""
+    decided = decision(row)
+    d = proposal(row)
     uid = decided_id(row)
+    if decided:
+        state = f'<span class="ok">Decided:</span> <code>{esc(decided)}</code>'
+    else:
+        state = (f'<span class="warn">Undecided.</span> Suggested: <code>{esc(d or "none")}</code>. '
+                 f'Write your answer in the <b>verdict</b> column of review.csv.')
     parts = [f'<section id="{esc(uid or row["text"])}"><h2>{esc(row["text"])}</h2>',
-             f'<div class="meta">{esc(row["kind"])} · {esc(row["mentions"])} mentions · volumes {esc(row["volumes"])}'
-             f' · decision <code>{esc(d or "undecided")}</code></div>']
+             f'<div class="meta">{esc(row["kind"])} · {esc(row["mentions"])} mentions · volumes {esc(row["volumes"])}</div>',
+             f'<div class="card">{state}</div>']
+    if row["candidates"]:
+        parts.append(f'<div class="meta">Possible duplicates (candidates): {esc(row["candidates"])}</div>')
     if row["subentries"]:
         parts.append(f'<div class="meta">Subentries: {esc(row["subentries"])}</div>')
     if row["cross_refs"]:
         parts.append(f'<div class="meta">Index cross-references: {esc(row["cross_refs"])}</div>')
+    if d.startswith("link:"):
+        target = draft or EXISTING.get(uid)
+        where = "an entity already in bahai-data" if uid in EXISTING else "an entity approved in review.csv"
+        parts.append(f'<div class="card"><div class="label">Would link to {where}</div>')
+        if target:
+            tdesc = (target.get("description") or {})
+            parts.append(f'<b>{esc((target.get("preferred_label") or {}).get("value") if isinstance(target.get("preferred_label"), dict) else target.get("preferred_label"))}</b> '
+                         f'<code>{esc(uid)}</code><p>{esc(tdesc.get("value") if isinstance(tdesc, dict) else tdesc)}</p>')
+        else:
+            parts.append(f'<code>{esc(uid)}</code> <span class="warn">(no record found)</span>')
+        parts.append('<div class="meta">Check that the passages below are about this same entity.</div></div>')
     if d.startswith("new:"):
         if not draft:
             parts.append('<div class="card warn">No draft yet.</div>')
@@ -62,7 +85,7 @@ def render_row(row, draft, entries):
             names = [draft.get("preferred_label", {}).get("value")] + [v.get("value") for v in draft.get("variant_labels", []) if isinstance(v, dict)]
             fields = {k: draft.get(k) for k in ("birth_date", "death_date", "start_date", "end_date", "location", "type") if k in draft}
             parts.append('<div class="card">')
-            parts.append(f'<div class="label">Draft record</div><b>{esc(draft.get("preferred_label", {}).get("value"))}</b> '
+            parts.append(f'<div class="label">{"Draft record" if decided else "Suggested new record (not decided yet)"}</div><b>{esc(draft.get("preferred_label", {}).get("value"))}</b> '
                          f'<code>{esc(uid)}</code><br>Other names: {esc(", ".join(n for n in names[1:] if n))}')
             if desc.get("value"):
                 parts.append(f'<p>{esc(desc["value"])}</p><div class="meta">Source: {esc(desc.get("source"))}</div>')
@@ -88,9 +111,12 @@ def render_row(row, draft, entries):
     parts.append("</section>")
     return "\n".join(parts)
 
+EXISTING = {}
+
 def write_page(batch):
     rows = [r for r in load_review() if r["batch"] == str(batch)]
     drafts = load_drafts()
+    EXISTING.update(load_existing()[0])
     entries = load_entries()
     body = [render_row(r, drafts.get(decided_id(r)), entries) for r in rows]
     nav = " ".join(f'<a href="#{esc(decided_id(r) or r["text"])}">{esc(r["text"])}</a>' for r in rows)
