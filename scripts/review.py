@@ -375,6 +375,8 @@ def merge_draft(existing, new):
     for key, value in new.items():
         if merged.get(key) in (None, "", [], {}) or (key == "location" and None in (merged.get(key) or {}).values()):
             merged[key] = value
+    if (existing.get("description") or {}).get("value"):
+        merged.pop("needs_research", None)   # the existing description stands; only other fields were missing
     names = {normalize_for_match(n) for n in record_names(existing)}
     merged["variant_labels"] = list(existing.get("variant_labels") or []) + [
         v for v in new.get("variant_labels") or [] if normalize_for_match(v.get("value") if isinstance(v, dict) else v) not in names]
