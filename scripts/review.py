@@ -387,7 +387,7 @@ def status_of(row):
     d = decision(row)
     return 'proposed' if d is None else ('ignored' if d == 'ignore' else 'approved')
 
-def build(batch_size, use_llm):
+def build(batch_size, use_llm, entity_type=None):
     client = get_gemini_client() if use_llm else None
     entries = load_entries()
     rows = load_review()
@@ -492,7 +492,12 @@ def build(batch_size, use_llm):
             d.split(':', 1)[1] not in drafts or needs_fields(drafts[d.split(':', 1)[1]]))
     numbered = [int(r['batch']) for r in rows if r['batch'].isdigit()]
     batch_no = str(max(numbered, default=0) + 1)
-    candidates = sorted([r for r in rows if needs_work(r) and not r['batch']], key=lambda r: -int(r['mentions'] or 0))
+    def type_of(row):
+        uid = entity_id(decision(row) or row['suggestion'])
+        return next((t for t, p in PREFIXES.items() if uid.startswith(p)), None)
+    candidates = sorted([r for r in rows if needs_work(r) and not r['batch']
+                         and (entity_type is None or type_of(r) == entity_type)],
+                        key=lambda r: -int(r['mentions'] or 0))
     batch = candidates[:batch_size] if batch_size else []
     for row in batch:
         row['batch'] = batch_no
@@ -536,6 +541,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build the review sheet and draft records.")
     parser.add_argument("command", choices=["build"])
     parser.add_argument("--batch", type=int, default=50, help="rows to select and draft (0: none)")
+    parser.add_argument("--type", choices=sorted(PREFIXES), help="only select rows of this type (from the decision, or the suggestion)")
     parser.add_argument("--no-llm", action="store_true", help="skip Gemini (no suggestions or drafts)")
     args = parser.parse_args()
-    build(args.batch, not args.no_llm)
+    build(args.batch, not args.no_llm, args.type)
