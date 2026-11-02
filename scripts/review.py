@@ -314,9 +314,14 @@ from {BOOK} (index entry: "{row['text']}").
 Entity id: {uid} (type: {category}). Known names: {json.dumps(names, ensure_ascii=False)}.{participant}
 
 Rules:
-- The description must say only what the sources say. Prefer the editors' biographical note or glossary entry if there is one.
+- Describe the entity itself, as modern scholarship understands it: what it is or was, when and where. Do not
+  summarize or describe the documents; they are linked to the entity separately.
+- The editors' own text (a biographical note or glossary entry, or the editors' introductions and footnotes) is the
+  authority for facts. Quoted historical documents (consular dispatches, letters, official reports) show that the
+  entity is mentioned and help identify it, but their statements can be wrong: do not repeat a claim from a
+  document that the editors' text contradicts, or that is doubtful.
 - Do NOT add facts from general knowledge to the description or the dates. If you know something the sources
-  don't say, put it in draft_notes, marked as unverified.
+  don't say, put it in draft_notes, marked as unverified, for the reviewer to confirm.
 - If the sources are not enough for a factual description, set "description" to null and explain in draft_notes.
 - Write names in the Bahá'í transliteration system used by the existing records, with acute accents and
   underdots, not macrons (e.g. Baháʼuʼlláh, Bábí, Mírzá, Ṭihrán, ʻAbdu'l-Bahá).
